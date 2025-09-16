@@ -145,13 +145,4 @@ public class MangaOCR {
         }
         return maxIdx;
     }
-
-    public static void main(String[] args) throws Exception {
-        System.loadLibrary(Core.NATIVE_LIBRARY_NAME);
-
-        MangaOCR ocr = new MangaOCR("ocr/quantized_model.onnx", "ocr/vocab.txt");
-        Mat img = Imgcodecs.imread("image.jpg");
-        String text = ocr.run(img);
-        System.out.println(text);
-    }
 }

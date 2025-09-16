@@ -1,10 +1,9 @@
-package com.xulihang;
-
+import com.xulihang.MangaOCR;
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
 import org.opencv.imgcodecs.Imgcodecs;
 
-public class Main {
+public class Test {
     public static void main(String[] args) throws Exception {
         System.loadLibrary(Core.NATIVE_LIBRARY_NAME);
 
