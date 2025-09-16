@@ -34,42 +34,41 @@ public class MangaOCR {
     }
 
     private float[][][][] preprocess(Mat image) {
-        // resize to 224x224
+        // 使用更高效的尺寸调整方法
         Mat resized = new Mat();
-        Imgproc.resize(image, resized, new Size(224, 224));
+        Imgproc.resize(image, resized, new Size(224, 224), 0, 0, Imgproc.INTER_LINEAR);
 
-        // convert to RGB if needed
+        // 直接处理数据，避免多次转换
         Mat rgb = new Mat();
+        int conversionCode = Imgproc.COLOR_BGR2RGB;
         if (resized.channels() == 1) {
-            Imgproc.cvtColor(resized, rgb, Imgproc.COLOR_GRAY2RGB);
+            conversionCode = Imgproc.COLOR_GRAY2RGB;
         } else if (resized.channels() == 4) {
-            Imgproc.cvtColor(resized, rgb, Imgproc.COLOR_BGRA2RGB);
-        } else {
-            Imgproc.cvtColor(resized, rgb, Imgproc.COLOR_BGR2RGB);
+            conversionCode = Imgproc.COLOR_BGRA2RGB;
         }
+        Imgproc.cvtColor(resized, rgb, conversionCode);
 
-        // float32 normalization
-        rgb.convertTo(rgb, CvType.CV_32F, 1.0 / 255.0);
-
+        // 一次性完成归一化和通道重排
         int height = rgb.rows();
         int width = rgb.cols();
-        int channels = rgb.channels();
-
         float[][][][] input = new float[1][3][height][width];
 
-        float[] data = new float[(int) (rgb.total() * rgb.channels())];
+        byte[] data = new byte[(int) (rgb.total() * rgb.channels())];
         rgb.get(0, 0, data);
 
-        // OpenCV stores as HWC, we need CHW
+        // 直接处理字节数据，避免额外的浮点转换
         for (int h = 0; h < height; h++) {
             for (int w = 0; w < width; w++) {
-                for (int c = 0; c < channels; c++) {
-                    float val = data[(h * width + w) * channels + c];
-                    val = (val - 0.5f) / 0.5f; // normalize
-                    input[0][c][h][w] = val;
+                int idx = (h * width + w) * 3;
+                for (int c = 0; c < 3; c++) {
+                    float val = (data[idx + c] & 0xFF) / 255.0f;
+                    input[0][c][h][w] = (val - 0.5f) / 0.5f;
                 }
             }
         }
+
+        resized.release();
+        rgb.release();
         return input;
     }
 

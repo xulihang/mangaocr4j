@@ -1,0 +1,10 @@
+<component name="ArtifactManager">
+  <artifact type="jar" name="mangaocr4j:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/mangaocr4j_jar</output-path>
+    <root id="archive" name="mangaocr4j.jar">
+      <element id="module-output" name="mangaocr4j" />
+      <element id="extracted-dir" path="$MAVEN_REPOSITORY$/org/openpnp/opencv/4.9.0-0/opencv-4.9.0-0.jar" path-in-jar="/" />
+      <element id="extracted-dir" path="$MAVEN_REPOSITORY$/com/microsoft/onnxruntime/onnxruntime/1.20.0/onnxruntime-1.20.0.jar" path-in-jar="/" />
+    </root>
+  </artifact>
+</component>
