@@ -14,13 +14,13 @@ import java.util.regex.*;
 public class MangaOCR {
     private OrtEnvironment env;
     private OrtSession session;
-    private List<String> vocab;
+    private Map<Long, String> vocabMap; // 改用HashMap
     // 预分配缓冲区，避免重复创建
     private FloatBuffer imageBuffer = FloatBuffer.allocate(1 * 3 * 224 * 224);
     public MangaOCR(String modelPath, String vocabPath) throws Exception {
         env = OrtEnvironment.getEnvironment();
         session = env.createSession(modelPath, new OrtSession.SessionOptions());
-        vocab = loadVocab(vocabPath);
+        vocabMap = loadVocab(vocabPath);
     }
 
     public String run(Mat image) throws Exception {
@@ -30,8 +30,13 @@ public class MangaOCR {
         return text;
     }
 
-    private List<String> loadVocab(String vocabFile) throws IOException {
-        return Files.readAllLines(Paths.get(vocabFile));
+    private Map<Long, String> loadVocab(String vocabFile) throws IOException {
+        List<String> lines = Files.readAllLines(Paths.get(vocabFile));
+        Map<Long, String> map = new HashMap<>(lines.size());
+        for (long i = 0; i < lines.size(); i++) {
+            map.put(i, lines.get((int) i));
+        }
+        return map;
     }
 
     private float[][][][] preprocess(Mat image) {
@@ -125,8 +130,9 @@ public class MangaOCR {
         StringBuilder sb = new StringBuilder();
         for (long id : tokenIds) {
             if (id < 5) continue;
-            if (id < vocab.size()) {
-                sb.append(vocab.get((int) id));
+            String token = vocabMap.get(id);
+            if (token != null) {
+                sb.append(token);
             }
         }
         return sb.toString();
