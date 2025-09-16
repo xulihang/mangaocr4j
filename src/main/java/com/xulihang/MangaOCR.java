@@ -15,7 +15,8 @@ public class MangaOCR {
     private OrtEnvironment env;
     private OrtSession session;
     private List<String> vocab;
-
+    // 预分配缓冲区，避免重复创建
+    private FloatBuffer imageBuffer = FloatBuffer.allocate(1 * 3 * 224 * 224);
     public MangaOCR(String modelPath, String vocabPath) throws Exception {
         env = OrtEnvironment.getEnvironment();
         session = env.createSession(modelPath, new OrtSession.SessionOptions());
@@ -73,38 +74,48 @@ public class MangaOCR {
     }
 
     private List<Long> generate(float[][][][] image) throws Exception {
-        List<Long> tokenIds = new ArrayList<>();
-        tokenIds.add(2L); // BOS token
+        List<Long> tokenIds = new ArrayList<>(50); // 预分配合理大小
+        tokenIds.add(2L);
 
-        for (int step = 0; step < 300; step++) {
-            long[][] tokenArray = new long[1][tokenIds.size()];
-            for (int i = 0; i < tokenIds.size(); i++) {
-                tokenArray[0][i] = tokenIds.get(i);
+        // 预填充图像张量
+        imageBuffer.rewind();
+        for (int c = 0; c < 3; c++) {
+            for (int h = 0; h < 224; h++) {
+                for (int w = 0; w < 224; w++) {
+                    imageBuffer.put(image[0][c][h][w]);
+                }
             }
+        }
+        imageBuffer.rewind();
 
-            OnnxTensor imageTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(flatten(image)), new long[]{1, 3, 224, 224});
-            OnnxTensor tokenTensor = OnnxTensor.createTensor(env, tokenArray);
+        OnnxTensor imageTensor = OnnxTensor.createTensor(env, imageBuffer, new long[]{1, 3, 224, 224});
 
-            Map<String, OnnxTensor> inputs = new HashMap<>();
-            inputs.put("image", imageTensor);
-            inputs.put("token_ids", tokenTensor);
+        try {
+            for (int step = 0; step < 300; step++) {
+                long[] tokenArray = new long[tokenIds.size()];
+                for (int i = 0; i < tokenIds.size(); i++) {
+                    tokenArray[i] = tokenIds.get(i);
+                }
 
-            OrtSession.Result results = session.run(inputs);
-            float[][][] logits = (float[][][]) results.get(0).getValue();
+                OnnxTensor tokenTensor = OnnxTensor.createTensor(env, new long[][]{tokenArray});
 
-            int lastIndex = logits[0].length - 1;
-            float[] lastLogits = logits[0][lastIndex];
+                try (OrtSession.Result results = session.run(Map.of(
+                        "image", imageTensor,
+                        "token_ids", tokenTensor
+                ))) {
 
-            int tokenId = argmax(lastLogits);
-            tokenIds.add((long) tokenId);
+                    float[][][] logits = (float[][][]) results.get(0).getValue();
+                    int lastIndex = logits[0].length - 1;
+                    int tokenId = argmax(logits[0][lastIndex]);
 
-            results.close();
+                    tokenIds.add((long) tokenId);
+                    tokenTensor.close();
+
+                    if (tokenId == 3) break;
+                }
+            }
+        } finally {
             imageTensor.close();
-            tokenTensor.close();
-
-            if (tokenId == 3) { // EOS
-                break;
-            }
         }
 
         return tokenIds;
