@@ -17,17 +17,55 @@ public class MangaOCR {
     private Map<Long, String> vocabMap; // 改用HashMap
     // 预分配缓冲区，避免重复创建
     private FloatBuffer imageBuffer = FloatBuffer.allocate(1 * 3 * 224 * 224);
+
+    // 添加时间统计变量
+    private long preprocessTime = 0;
+    private long generateTime = 0;
+    private long decodeTime = 0;
+    private long totalTime = 0;
+
     public MangaOCR(String modelPath, String vocabPath) throws Exception {
         env = OrtEnvironment.getEnvironment();
-        session = env.createSession(modelPath, new OrtSession.SessionOptions());
+        OrtSession.SessionOptions options = new OrtSession.SessionOptions();
+
+        // 优化会话选项
+        options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+        options.setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL);
+
+        session = env.createSession(modelPath, options);
         vocabMap = loadVocab(vocabPath);
     }
 
     public String run(Mat image) throws Exception {
+        long startTime = System.nanoTime();
+
         float[][][][] inputImage = preprocess(image);
         List<Long> tokenIds = generate(inputImage);
         String text = decode(tokenIds);
+
+        totalTime = System.nanoTime() - startTime;
+
         return text;
+    }
+
+    // 添加时间统计打印方法
+    public void printTimeStatistics() {
+        System.out.println("===== 时间统计 =====");
+        System.out.printf("预处理时间: %.3f ms%n", preprocessTime / 1_000_000.0);
+        System.out.printf("生成时间: %.3f ms%n", generateTime / 1_000_000.0);
+        System.out.printf("解码时间: %.3f ms%n", decodeTime / 1_000_000.0);
+        System.out.printf("总时间: %.3f ms%n", totalTime / 1_000_000.0);
+        System.out.println("====================");
+    }
+
+    // 添加获取时间统计的方法
+    public Map<String, Double> getTimeStatistics() {
+        Map<String, Double> stats = new HashMap<>();
+        stats.put("preprocess", preprocessTime / 1_000_000.0);
+        stats.put("generate", generateTime / 1_000_000.0);
+        stats.put("decode", decodeTime / 1_000_000.0);
+        stats.put("total", totalTime / 1_000_000.0);
+        return stats;
     }
 
     private Map<Long, String> loadVocab(String vocabFile) throws IOException {
@@ -40,6 +78,8 @@ public class MangaOCR {
     }
 
     private float[][][][] preprocess(Mat image) {
+        long startTime = System.nanoTime();
+
         // 使用更高效的尺寸调整方法
         Mat resized = new Mat();
         Imgproc.resize(image, resized, new Size(224, 224), 0, 0, Imgproc.INTER_LINEAR);
@@ -75,10 +115,14 @@ public class MangaOCR {
 
         resized.release();
         rgb.release();
+
+        preprocessTime = System.nanoTime() - startTime;
         return input;
     }
 
     private List<Long> generate(float[][][][] image) throws Exception {
+        long startTime = System.nanoTime();
+
         List<Long> tokenIds = new ArrayList<>(50);
         tokenIds.add(2L); // 开始符
 
@@ -93,18 +137,32 @@ public class MangaOCR {
         }
         imageBuffer.rewind();
 
-        OnnxTensor imageTensor = OnnxTensor.createTensor(env, imageBuffer, new long[]{1, 3, 224, 224});
+        // 重用图像张量
+        try (OnnxTensor imageTensor = OnnxTensor.createTensor(env, imageBuffer, new long[]{1, 3, 224, 224})) {
 
-        try {
+            // 预分配token数组，避免重复创建
+            long[] tokenArray = new long[100]; // 最大长度
+            int currentLength = 0;
+
             // 添加重复检测和置信度阈值
             int consecutiveNonText = 0;
             final int MAX_CONSECUTIVE_NON_TEXT = 5;
-            final float CONFIDENCE_THRESHOLD = 0.7f; // 置信度阈值
+            final float CONFIDENCE_THRESHOLD = 0.7f;
+            final float TOO_LOW_CONFIDENCE_THRESHOLD = 0.2f;
 
-            for (int step = 0; step < 100; step++) { // 减少最大步数
-                long[] tokenArray = tokenIds.stream().mapToLong(Long::longValue).toArray();
+            for (int step = 0; step < 100; step++) {
+                // 更新token数组
+                if (currentLength < tokenIds.size()) {
+                    for (int i = 0; i < tokenIds.size(); i++) {
+                        tokenArray[i] = tokenIds.get(i);
+                    }
+                    currentLength = tokenIds.size();
+                }
 
-                try (OnnxTensor tokenTensor = OnnxTensor.createTensor(env, new long[][]{tokenArray});
+                // 只使用实际长度的子数组
+                long[] currentTokens = Arrays.copyOf(tokenArray, currentLength);
+
+                try (OnnxTensor tokenTensor = OnnxTensor.createTensor(env, new long[][]{currentTokens});
                      OrtSession.Result results = session.run(Map.of(
                              "image", imageTensor,
                              "token_ids", tokenTensor
@@ -121,6 +179,9 @@ public class MangaOCR {
 
                     // 低置信度或重复生成非文本token时提前终止
                     if (confidence < CONFIDENCE_THRESHOLD) {
+                        if (confidence < TOO_LOW_CONFIDENCE_THRESHOLD) {
+                            break;
+                        }
                         consecutiveNonText++;
                         if (consecutiveNonText >= MAX_CONSECUTIVE_NON_TEXT) {
                             break;
@@ -132,14 +193,13 @@ public class MangaOCR {
                     tokenIds.add((long) tokenId);
                 }
             }
-        } finally {
-            imageTensor.close();
         }
 
+        generateTime = System.nanoTime() - startTime;
         return tokenIds;
     }
 
-    // 添加softmax函数计算置信度
+    // 优化的softmax实现
     private float[] softmax(float[] logits) {
         float max = Float.NEGATIVE_INFINITY;
         for (float value : logits) {
@@ -149,17 +209,29 @@ public class MangaOCR {
         float sum = 0.0f;
         float[] expValues = new float[logits.length];
         for (int i = 0; i < logits.length; i++) {
-            expValues[i] = (float) Math.exp(logits[i] - max);
+            // 使用快速指数近似
+            expValues[i] = fastExp(logits[i] - max);
             sum += expValues[i];
         }
 
+        float invSum = 1.0f / sum;
         for (int i = 0; i < expValues.length; i++) {
-            expValues[i] /= sum;
+            expValues[i] *= invSum;
         }
         return expValues;
     }
 
+    // 快速指数函数近似
+    private float fastExp(float x) {
+        x = 1.0f + x / 256.0f;
+        x *= x; x *= x; x *= x; x *= x;
+        x *= x; x *= x; x *= x; x *= x;
+        return x;
+    }
+
     private String decode(List<Long> tokenIds) {
+        long startTime = System.nanoTime();
+
         StringBuilder sb = new StringBuilder();
         for (long id : tokenIds) {
             if (id < 5) continue;
@@ -168,6 +240,8 @@ public class MangaOCR {
                 sb.append(token);
             }
         }
+
+        decodeTime = System.nanoTime() - startTime;
         return sb.toString();
     }
 
@@ -183,15 +257,42 @@ public class MangaOCR {
         return flat;
     }
 
+    // 使用循环展开优化argmax
     private static int argmax(float[] arr) {
         int maxIdx = 0;
         float maxVal = arr[0];
-        for (int i = 1; i < arr.length; i++) {
+
+        // 循环展开以提高性能
+        int i = 1;
+        int length = arr.length;
+
+        for (; i <= length - 4; i += 4) {
+            if (arr[i] > maxVal) {
+                maxVal = arr[i];
+                maxIdx = i;
+            }
+            if (arr[i + 1] > maxVal) {
+                maxVal = arr[i + 1];
+                maxIdx = i + 1;
+            }
+            if (arr[i + 2] > maxVal) {
+                maxVal = arr[i + 2];
+                maxIdx = i + 2;
+            }
+            if (arr[i + 3] > maxVal) {
+                maxVal = arr[i + 3];
+                maxIdx = i + 3;
+            }
+        }
+
+        // 处理剩余元素
+        for (; i < length; i++) {
             if (arr[i] > maxVal) {
                 maxVal = arr[i];
                 maxIdx = i;
             }
         }
+
         return maxIdx;
     }
 }

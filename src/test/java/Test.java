@@ -8,10 +8,12 @@ public class Test {
         System.loadLibrary(Core.NATIVE_LIBRARY_NAME);
 
         MangaOCR ocr = new MangaOCR("ocr/quantized_model.onnx", "ocr/vocab.txt");
-        Mat img = Imgcodecs.imread("image.jpg");
+        Mat img = Imgcodecs.imread("image1.jpg");
         String text = ocr.run(img);
+        ocr.printTimeStatistics();
         System.out.println(text);
         String text2 = ocr.run(img);
+        ocr.printTimeStatistics();
         System.out.println(text2);
         System.out.println("Hello world!");
     }
