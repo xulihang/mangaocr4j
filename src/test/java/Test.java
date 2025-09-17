@@ -7,8 +7,8 @@ public class Test {
     public static void main(String[] args) throws Exception {
         System.loadLibrary(Core.NATIVE_LIBRARY_NAME);
 
-        MangaOCR ocr = new MangaOCR("ocr/quantized_model.onnx", "ocr/vocab.txt");
-        Mat img = Imgcodecs.imread("image1.jpg");
+        MangaOCR ocr = new MangaOCR("ocr/manga-ocr.converted.encoder.preprocessed.quant.onnx", "ocr/manga-ocr.converted.decoder.preprocessed.quant.onnx","ocr/vocab.txt");
+        Mat img = Imgcodecs.imread("image.jpg");
         String text = ocr.run(img);
         ocr.printTimeStatistics();
         System.out.println(text);
