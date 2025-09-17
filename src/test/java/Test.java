@@ -8,7 +8,7 @@ public class Test {
         System.loadLibrary(Core.NATIVE_LIBRARY_NAME);
 
         MangaOCR ocr = new MangaOCR("ocr/manga-ocr.converted.encoder.preprocessed.quant.onnx", "ocr/manga-ocr.converted.decoder.preprocessed.quant.onnx","ocr/vocab.txt");
-        Mat img = Imgcodecs.imread("image.jpg");
+        Mat img = Imgcodecs.imread("image1.jpg");
         String text = ocr.run(img);
         ocr.printTimeStatistics();
         System.out.println(text);

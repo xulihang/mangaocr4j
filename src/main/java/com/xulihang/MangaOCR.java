@@ -145,7 +145,11 @@ public class MangaOCR {
                 int lastIndex = logits[0].length - 1;
                 float[] probabilities = softmax(logits[0][lastIndex]);
                 int tokenId = argmax(probabilities);
-
+                float confidence = probabilities[tokenId];
+                // 低置信度 → 提前结束
+                if (confidence < 0.2f) {
+                    break;
+                }
                 if (tokenId == 3) break; // end token
                 tokenIds.add((long) tokenId);
             }
