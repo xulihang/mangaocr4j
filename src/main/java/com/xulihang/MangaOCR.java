@@ -79,10 +79,10 @@ public class MangaOCR {
     }
 
     private List<Long> generate(float[][][][] image) throws Exception {
-        List<Long> tokenIds = new ArrayList<>(50); // 预分配合理大小
-        tokenIds.add(2L);
+        List<Long> tokenIds = new ArrayList<>(50);
+        tokenIds.add(2L); // 开始符
 
-        // 预填充图像张量
+        // 预填充图像张量（保持不变）
         imageBuffer.rewind();
         for (int c = 0; c < 3; c++) {
             for (int h = 0; h < 224; h++) {
@@ -96,27 +96,40 @@ public class MangaOCR {
         OnnxTensor imageTensor = OnnxTensor.createTensor(env, imageBuffer, new long[]{1, 3, 224, 224});
 
         try {
-            for (int step = 0; step < 300; step++) {
-                long[] tokenArray = new long[tokenIds.size()];
-                for (int i = 0; i < tokenIds.size(); i++) {
-                    tokenArray[i] = tokenIds.get(i);
-                }
+            // 添加重复检测和置信度阈值
+            int consecutiveNonText = 0;
+            final int MAX_CONSECUTIVE_NON_TEXT = 5;
+            final float CONFIDENCE_THRESHOLD = 0.7f; // 置信度阈值
 
-                OnnxTensor tokenTensor = OnnxTensor.createTensor(env, new long[][]{tokenArray});
+            for (int step = 0; step < 100; step++) { // 减少最大步数
+                long[] tokenArray = tokenIds.stream().mapToLong(Long::longValue).toArray();
 
-                try (OrtSession.Result results = session.run(Map.of(
-                        "image", imageTensor,
-                        "token_ids", tokenTensor
-                ))) {
+                try (OnnxTensor tokenTensor = OnnxTensor.createTensor(env, new long[][]{tokenArray});
+                     OrtSession.Result results = session.run(Map.of(
+                             "image", imageTensor,
+                             "token_ids", tokenTensor
+                     ))) {
 
                     float[][][] logits = (float[][][]) results.get(0).getValue();
                     int lastIndex = logits[0].length - 1;
-                    int tokenId = argmax(logits[0][lastIndex]);
+                    float[] probabilities = softmax(logits[0][lastIndex]);
+                    int tokenId = argmax(probabilities);
+                    float confidence = probabilities[tokenId];
+
+                    // 提前终止条件
+                    if (tokenId == 3) break; // 结束符
+
+                    // 低置信度或重复生成非文本token时提前终止
+                    if (confidence < CONFIDENCE_THRESHOLD) {
+                        consecutiveNonText++;
+                        if (consecutiveNonText >= MAX_CONSECUTIVE_NON_TEXT) {
+                            break;
+                        }
+                    } else {
+                        consecutiveNonText = 0;
+                    }
 
                     tokenIds.add((long) tokenId);
-                    tokenTensor.close();
-
-                    if (tokenId == 3) break;
                 }
             }
         } finally {
@@ -124,6 +137,26 @@ public class MangaOCR {
         }
 
         return tokenIds;
+    }
+
+    // 添加softmax函数计算置信度
+    private float[] softmax(float[] logits) {
+        float max = Float.NEGATIVE_INFINITY;
+        for (float value : logits) {
+            if (value > max) max = value;
+        }
+
+        float sum = 0.0f;
+        float[] expValues = new float[logits.length];
+        for (int i = 0; i < logits.length; i++) {
+            expValues[i] = (float) Math.exp(logits[i] - max);
+            sum += expValues[i];
+        }
+
+        for (int i = 0; i < expValues.length; i++) {
+            expValues[i] /= sum;
+        }
+        return expValues;
     }
 
     private String decode(List<Long> tokenIds) {
