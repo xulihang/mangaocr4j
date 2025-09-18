@@ -7,11 +7,13 @@ public class Test {
     public static void main(String[] args) throws Exception {
         System.loadLibrary(Core.NATIVE_LIBRARY_NAME);
 
-        MangaOCR ocr = new MangaOCR("ocr/manga-ocr.converted.encoder.preprocessed.quant.onnx", "ocr/manga-ocr.converted.decoder.preprocessed.quant.onnx","ocr/vocab.txt");
+        MangaOCR ocr = new MangaOCR("ocr/encoder_int8.onnx", "ocr/decoder_int8.onnx","ocr/vocab.txt");
         Mat img = Imgcodecs.imread("image1.jpg");
-        String text = ocr.run(img);
-        ocr.printTimeStatistics();
-        System.out.println(text);
+        for (int i = 0; i < 150; i++) {
+            String text = ocr.run(img);
+            ocr.printTimeStatistics();
+            System.out.println(text);
+        }
         String text2 = ocr.run(img);
         ocr.printTimeStatistics();
         System.out.println(text2);

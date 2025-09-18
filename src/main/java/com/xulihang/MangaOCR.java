@@ -8,14 +8,14 @@ import java.io.*;
 import java.nio.*;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-public class MangaOCR {
-    private OrtEnvironment env;
-    private OrtSession encoderSession;
-    private OrtSession decoderSession;
-    private Map<Long, String> vocabMap;
-
-    private FloatBuffer imageBuffer = FloatBuffer.allocate(1 * 3 * 224 * 224);
+public class MangaOCR implements AutoCloseable {
+    private final OrtEnvironment env;
+    private final OrtSession encoderSession;
+    private final OrtSession decoderSession;
+    private final Map<Long, String> vocabMap;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     private long preprocessTime = 0;
     private long generateTime = 0;
@@ -33,7 +33,19 @@ public class MangaOCR {
         vocabMap = loadVocab(vocabPath);
     }
 
-    // 添加时间统计打印方法
+    // ---- Public API ----
+    public String run(Mat image) throws Exception {
+        if (closed.get()) throw new IllegalStateException("MangaOCR is closed");
+        long startTime = System.nanoTime();
+
+        float[][][][] inputImage = preprocess(image); // local array
+        List<Long> tokenIds = generate(inputImage);   // performs encoder+decoder with proper closing
+        String text = decode(tokenIds);
+
+        totalTime = System.nanoTime() - startTime;
+        return text;
+    }
+
     public void printTimeStatistics() {
         System.out.println("===== 时间统计 =====");
         System.out.printf("预处理时间: %.3f ms%n", preprocessTime / 1_000_000.0);
@@ -43,24 +55,28 @@ public class MangaOCR {
         System.out.println("====================");
     }
 
-    public String run(Mat image) throws Exception {
-        long startTime = System.nanoTime();
-
-        float[][][][] inputImage = preprocess(image);
-        List<Long> tokenIds = generate(inputImage);
-        String text = decode(tokenIds);
-
-        totalTime = System.nanoTime() - startTime;
-        return text;
+    @Override
+    public void close() {
+        if (!closed.getAndSet(true)) {
+            try {
+                encoderSession.close();
+            } catch (Exception ignored) {}
+            try {
+                decoderSession.close();
+            } catch (Exception ignored) {}
+            // Don't close env; OrtEnvironment is usually shared. If you created a dedicated env, close it here.
+            // env.close(); // only if you want to close environment
+        }
     }
 
+    // ---- Private helpers ----
     private Map<Long, String> loadVocab(String vocabFile) throws IOException {
         List<String> lines = Files.readAllLines(Paths.get(vocabFile));
         Map<Long, String> map = new HashMap<>(lines.size());
         for (long i = 0; i < lines.size(); i++) {
             map.put(i, lines.get((int) i));
         }
-        return map;
+        return Collections.unmodifiableMap(map);
     }
 
     private float[][][][] preprocess(Mat image) {
@@ -105,7 +121,14 @@ public class MangaOCR {
         List<Long> tokenIds = new ArrayList<>(50);
         tokenIds.add(2L); // start token
 
-        imageBuffer.rewind();
+        // create a direct FloatBuffer local to this invocation (thread-local semantics)
+        final int elems = 1 * 3 * 224 * 224;
+        FloatBuffer imageBuffer = ByteBuffer
+                .allocateDirect(elems * Float.BYTES)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer();
+
+        // fill the buffer
         for (int c = 0; c < 3; c++) {
             for (int h = 0; h < 224; h++) {
                 for (int w = 0; w < 224; w++) {
@@ -115,10 +138,31 @@ public class MangaOCR {
         }
         imageBuffer.rewind();
 
-        // 1) Run encoder once
-        OnnxTensor imageTensor = OnnxTensor.createTensor(env, imageBuffer, new long[]{1, 3, 224, 224});
-        OrtSession.Result encoderResult = encoderSession.run(Map.of("pixel_values", imageTensor));
-        Object encoderOutputs = encoderResult.get(0).getValue(); // usually float[1][seq][hidden]
+        // 1) Run encoder once and make a deep copy of outputs (so Ort native memory can be freed)
+        float[][][] encoderOutputsCopy; // shape expected [1][seq][hidden] or similar
+
+        try (OnnxTensor imageTensor = OnnxTensor.createTensor(env, imageBuffer, new long[]{1, 3, 224, 224});
+             OrtSession.Result encoderResult = encoderSession.run(Collections.singletonMap("pixel_values", imageTensor))) {
+
+            // get raw value (usually float[][][])
+            Object rawEnc = encoderResult.get(0).getValue();
+            if (!(rawEnc instanceof float[][][])) {
+                // defensive: try to handle other shapes, but we expect float[][][]
+                throw new IllegalStateException("Unexpected encoder output type: " + rawEnc.getClass());
+            }
+            float[][][] enc = (float[][][]) rawEnc;
+
+            // deep copy enc -> encoderOutputsCopy to avoid holding references to OrtValue
+            int dim0 = enc.length;
+            int dim1 = enc[0].length;
+            int dim2 = enc[0][0].length;
+            encoderOutputsCopy = new float[dim0][dim1][dim2];
+            for (int i = 0; i < dim0; i++) {
+                for (int j = 0; j < dim1; j++) {
+                    System.arraycopy(enc[i][j], 0, encoderOutputsCopy[i][j], 0, dim2);
+                }
+            }
+        }
 
         // 2) Iterative decoding
         long[] tokenArray = new long[100];
@@ -133,20 +177,27 @@ public class MangaOCR {
             }
             long[] currentTokens = Arrays.copyOf(tokenArray, currentLength);
 
-            try (OnnxTensor tokenTensor = OnnxTensor.createTensor(env, new long[][]{currentTokens});
-                 OnnxTensor encoderOutTensor = OnnxTensor.createTensor(env, encoderOutputs)) {
+            // tokenTensor: shape [1, seq]
+            long[][] token2d = new long[1][currentTokens.length];
+            System.arraycopy(currentTokens, 0, token2d[0], 0, currentTokens.length);
 
-                OrtSession.Result results = decoderSession.run(Map.of(
-                        "encoder_hidden_states", encoderOutTensor,
-                        "input_ids", tokenTensor
-                ));
+            try (OnnxTensor tokenTensor = OnnxTensor.createTensor(env, token2d);
+                 OnnxTensor encoderOutTensor = OnnxTensor.createTensor(env, encoderOutputsCopy);
+                 OrtSession.Result results = decoderSession.run(Map.of(
+                         "encoder_hidden_states", encoderOutTensor,
+                         "input_ids", tokenTensor
+                 ))) {
 
-                float[][][] logits = (float[][][]) results.get(0).getValue();
+                Object rawLogits = results.get(0).getValue();
+                if (!(rawLogits instanceof float[][][])) {
+                    throw new IllegalStateException("Unexpected decoder logits type: " + rawLogits.getClass());
+                }
+                float[][][] logits = (float[][][]) rawLogits;
                 int lastIndex = logits[0].length - 1;
                 float[] probabilities = softmax(logits[0][lastIndex]);
                 int tokenId = argmax(probabilities);
                 float confidence = probabilities[tokenId];
-                // 低置信度 → 提前结束
+
                 if (confidence < 0.2f) {
                     break;
                 }
@@ -178,23 +229,17 @@ public class MangaOCR {
         float max = Float.NEGATIVE_INFINITY;
         for (float value : logits) if (value > max) max = value;
 
-        float sum = 0.0f;
-        float[] expValues = new float[logits.length];
+        double sum = 0.0;
+        double[] expValues = new double[logits.length];
         for (int i = 0; i < logits.length; i++) {
-            expValues[i] = fastExp(logits[i] - max);
+            expValues[i] = Math.exp(logits[i] - max);
             sum += expValues[i];
         }
 
-        float invSum = 1.0f / sum;
-        for (int i = 0; i < expValues.length; i++) expValues[i] *= invSum;
-        return expValues;
-    }
-
-    private float fastExp(float x) {
-        x = 1.0f + x / 256.0f;
-        x *= x; x *= x; x *= x; x *= x;
-        x *= x; x *= x; x *= x; x *= x;
-        return x;
+        float invSum = (float) (1.0 / sum);
+        float[] out = new float[logits.length];
+        for (int i = 0; i < logits.length; i++) out[i] = (float) expValues[i] * invSum;
+        return out;
     }
 
     private static int argmax(float[] arr) {
@@ -208,4 +253,6 @@ public class MangaOCR {
         }
         return maxIdx;
     }
+
+    // Optional: expose timing fields or getters if needed
 }
