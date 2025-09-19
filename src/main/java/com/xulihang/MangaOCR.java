@@ -6,7 +6,6 @@ import org.opencv.imgproc.Imgproc;
 
 import java.io.*;
 import java.nio.*;
-import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -22,15 +21,25 @@ public class MangaOCR implements AutoCloseable {
     private long decodeTime = 0;
     private long totalTime = 0;
 
-    public MangaOCR(String encoderPath, String decoderPath, String vocabPath) throws Exception {
+    public MangaOCR(String encoderPath, String decoderPath, List<String> vocabLines) throws Exception {
+        env = OrtEnvironment.getEnvironment();
+        OrtSession.SessionOptions options = new OrtSession.SessionOptions();
+        options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+        options.setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL);
+        encoderSession = env.createSession(encoderPath, options);
+        decoderSession = env.createSession(decoderPath, options);
+        vocabMap = loadVocab(vocabLines);
+    }
+
+    public MangaOCR(byte[] encoder, byte[] decoder, List<String> vocabLines) throws Exception {
         env = OrtEnvironment.getEnvironment();
         OrtSession.SessionOptions options = new OrtSession.SessionOptions();
         options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
         options.setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL);
 
-        encoderSession = env.createSession(encoderPath, options);
-        decoderSession = env.createSession(decoderPath, options);
-        vocabMap = loadVocab(vocabPath);
+        encoderSession = env.createSession(encoder, options);
+        decoderSession = env.createSession(decoder, options);
+        vocabMap = loadVocab(vocabLines);
     }
 
     // ---- Public API ----
@@ -70,8 +79,7 @@ public class MangaOCR implements AutoCloseable {
     }
 
     // ---- Private helpers ----
-    private Map<Long, String> loadVocab(String vocabFile) throws IOException {
-        List<String> lines = Files.readAllLines(Paths.get(vocabFile));
+    private Map<Long, String> loadVocab(List<String> lines) throws IOException {
         Map<Long, String> map = new HashMap<>(lines.size());
         for (long i = 0; i < lines.size(); i++) {
             map.put(i, lines.get((int) i));
