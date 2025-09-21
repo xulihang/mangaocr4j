@@ -11,8 +11,8 @@ public class Test {
     public static void main(String[] args) throws Exception {
         System.loadLibrary(Core.NATIVE_LIBRARY_NAME);
         List<String> lines = Files.readAllLines(Paths.get("ocr/vocab.txt"));
-        MangaOCR ocr = new MangaOCR("ocr/encoder_int8.onnx", "ocr/decoder_int8.onnx",lines);
-        Mat img = Imgcodecs.imread("image1.jpg");
+        MangaOCR ocr = new MangaOCR("ocr/encoder.onnx", "ocr/decoder.onnx",lines);
+        Mat img = Imgcodecs.imread("image11.jpg");
         for (int i = 0; i < 150; i++) {
             String text = ocr.run(img);
             ocr.printTimeStatistics();

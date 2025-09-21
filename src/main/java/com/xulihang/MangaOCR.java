@@ -175,7 +175,7 @@ public class MangaOCR implements AutoCloseable {
         // 2) Iterative decoding
         long[] tokenArray = new long[100];
         int currentLength = 0;
-
+        int consecutive_low_conf_times = 0;
         for (int step = 0; step < 100; step++) {
             if (currentLength < tokenIds.size()) {
                 for (int i = 0; i < tokenIds.size(); i++) {
@@ -205,9 +205,13 @@ public class MangaOCR implements AutoCloseable {
                 float[] probabilities = softmax(logits[0][lastIndex]);
                 int tokenId = argmax(probabilities);
                 float confidence = probabilities[tokenId];
-
                 if (confidence < 0.2f) {
-                    break;
+                    consecutive_low_conf_times++;
+                    if (consecutive_low_conf_times > 5) {
+                        break;
+                    }
+                }else{
+                    consecutive_low_conf_times = 0;
                 }
                 if (tokenId == 3) break; // end token
                 tokenIds.add((long) tokenId);
